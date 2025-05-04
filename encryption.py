@@ -25,9 +25,13 @@ def unpad(msg):
     pad_len = msg[-1]
     return msg[:-pad_len]
 
-def derive_key(password):
-    # Derives a secure 256-bit AES key from a shared password using PBKDF2.
-    return PBKDF2(password, SALT, dkLen=32, count=ITERATIONS)
+def derive_key(password, salt=SALT, iterations=ITERATIONS):
+    """
+    Derives a secure 256-bit AES key from a shared password using PBKDF2.
+    Accepts an optional salt (used for key rotation).
+    """
+    return PBKDF2(password, salt, dkLen=32, count=iterations)
+
 
 def encrypt(key, plaintext):
     """

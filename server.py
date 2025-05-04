@@ -3,7 +3,10 @@ import threading
 import tkinter as tk
 from tkinter import scrolledtext, simpledialog
 from datetime import datetime
-from encryption import derive_key, encrypt, decrypt  # Import custom crypto functions
+from Crypto.Random import get_random_bytes
+import base64
+
+from encryption import derive_key, encrypt, decrypt, SALT  # Import custom crypto functions
 
 class ChatApp:
     def __init__(self, is_server):
@@ -11,8 +14,10 @@ class ChatApp:
         self.password = simpledialog.askstring("Password", "Enter shared password:", show='*')
         # Prompt the user for a display name
         self.username = simpledialog.askstring("Username", "Enter your username:")
-        # Generate encryption key from password
+
+        self.salt = SALT  # Initial static salt (can be rotated later)
         self.key = derive_key(self.password)
+        self.message_count = 0
 
         # Main application window
         self.window = tk.Tk()
@@ -38,7 +43,7 @@ class ChatApp:
 
         self.entry = tk.Entry(self.entry_frame)
         self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.entry.bind("<Return>", self.send_message)  # Send on Enter key
+        self.entry.bind("<Return>", self.send_message)
 
         # Button for sending messages
         self.send_button = tk.Button(self.entry_frame, text="Send", command=lambda: self.send_message(None))
@@ -52,7 +57,7 @@ class ChatApp:
         self.conn, addr = self.sock.accept()  # Accept incoming connection
         print(f"[SERVER] Connected to {addr}")
 
-        # Exchange usernames: receive client's username, send ours
+        # Exchange usernames
         peer_name = b""
         while not peer_name.endswith(b"\n"):
             peer_name += self.conn.recv(1)
@@ -70,6 +75,18 @@ class ChatApp:
         if not msg:
             return
         self.entry.delete(0, tk.END)
+
+        self.message_count += 1
+
+        # Rotate key and send new salt every 10 messages
+        if self.message_count % 10 == 0:
+            new_salt = get_random_bytes(16)
+            self.salt = new_salt
+            self.key = derive_key(self.password)
+            print(f"[DEBUG] New derived key: {self.key.hex()}")
+            encoded_salt = base64.b64encode(new_salt).decode()
+            self.conn.sendall(f"__SALT__:{encoded_salt}\n".encode())
+            self.cipher_area.insert(tk.END, "[SYSTEM] Sent new salt to peer\n")
 
         # Encrypt the message using AES-CBC
         enc = encrypt(self.key, msg)
@@ -91,15 +108,22 @@ class ChatApp:
                     break
                 buffer += data
 
-                # Process each message
                 while b"\n" in buffer:
                     msg, buffer = buffer.split(b"\n", 1)
-                    decoded = decrypt(self.key, msg.decode())
-                    timestamp = datetime.now().strftime('%H:%M:%S')
+                    incoming = msg.decode()
 
-                    # Display received message (plaintext and ciphertext)
+                    if incoming.startswith("__SALT__:"):
+                        new_salt = base64.b64decode(incoming.split(":", 1)[1])
+                        self.salt = new_salt
+                        self.key = derive_key(self.password)
+                        print(f"[DEBUG] New derived key: {self.key.hex()}")
+                        self.plain_area.insert(tk.END, "[SYSTEM] Received new salt, key updated\n")
+                        continue
+
+                    decoded = decrypt(self.key, incoming)
+                    timestamp = datetime.now().strftime('%H:%M:%S')
                     self.plain_area.insert(tk.END, f"[{timestamp}] {self.peer_username}: {decoded}\n")
-                    self.cipher_area.insert(tk.END, f"[{timestamp}] {self.peer_username}: {msg.decode()}\n")
+                    self.cipher_area.insert(tk.END, f"[{timestamp}] {self.peer_username}: {incoming}\n")
 
             except Exception as e:
                 self.plain_area.insert(tk.END, f"Error: {e}\n")
